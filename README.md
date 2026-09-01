@@ -10,6 +10,7 @@ DeepSeek Harness 的 cordis 插件：在 DSH 里用 `/desktop` 命令打开并�
 | `/desktop auto on` / `auto off` | 管理桌面应用的开机自启（写共享配置，桌面应用约 5 秒内应用） |
 | `/desktop update` | 请求桌面应用检查更新（桌面应用轮询到后触发 electron-updater） |
 | `/desktop stop` | 请求桌面应用停止**由它启动的**本地 DSH 服务（没有可停的服务时桌面端会提示） |
+| `/desktop notify <文本>` | 请求桌面应用弹一次**系统通知**（如告警/任务完成提醒；桌面应用勿扰时段内静默丢弃） |
 | `/desktop status` | 回显桌面应用的地址 / 自启 / 可执行路径 |
 
 ## 运行机制
@@ -17,7 +18,10 @@ DeepSeek Harness 的 cordis 插件：在 DSH 里用 `/desktop` 命令打开并�
 插件运行在 DSH 进程内，与独立 Electron 桌面应用通过**共享配置文件**通信：
 
 - 路径：`$DSH_HOME/desktop-shell.json`（或 `DSH_DESKTOP_CONFIG` 环境变量显式指定）
-- 字段：`url` / `autoLaunch` / `updateRequest` / `serviceStopRequest` / `desktopExe`
+- 字段：`url` / `autoLaunch` / `updateRequest` / `serviceStopRequest` / `notifyRequest` / `desktopExe`
+
+`/desktop notify` 写入 `notifyRequest`（唯一 id + 标题 + 正文），桌面应用轮询到后弹一次
+系统通知并清空该字段（应用重启不补弹启动前的请求）；应用处于勿扰时段时静默丢弃。
 
 `/desktop open` 通过 `ctx.webServer.port` 拿到当前 DSH web 的监听端口，把它作为 `--url` 传给桌面应用（同时写进共享配置），桌面应用据此直接连到当前实例，不重复启动后端。
 

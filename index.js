@@ -4,6 +4,8 @@
 //   /desktop auto on|off    管理桌面应用的开机自启（与 settings 面板同一来源）
 //   /desktop update         请求桌面应用检查更新（写共享配置，Electron 监听后触发）
 //   /desktop stop           请求桌面应用停止本地 DSH 服务（写共享配置，Electron 监听后停止）
+//   /desktop notify <文本>  请求桌面应用弹一次系统通知（写共享配置 notifyRequest，
+//                           Electron 监听后弹并清空；勿扰时段内静默丢弃）
 //   /desktop status         回显桌面应用状态
 //
 // settings 是真相来源：设置面板与 /desktop 命令都通过它；变化由 watch 镜像到
@@ -12,7 +14,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import z from '@deepseek-ai/schemastery';
 
 const name = 'desktop-control';
@@ -23,13 +25,16 @@ const SETTINGS_NS = 'desktop-control';
 // —— 共享配置（与 Electron 侧 shared-config.ts 保持一致） ——
 
 function dshHome() {
-  if (process.env.DSH_HOME) return process.env.DSH_HOME;
+  const explicit = process.env.DSH_HOME;
+  if (explicit && isAbsolute(explicit)) return explicit;
   const p = join(homedir(), '.dsh');
   return existsSync(p) ? p : null;
 }
 
 function configPath() {
-  if (process.env.DSH_DESKTOP_CONFIG) return process.env.DSH_DESKTOP_CONFIG;
+  // 显式覆盖仅接受绝对路径（与外壳 shared-config.ts 一致）：相对路径会随 cwd 漂移。
+  const explicit = process.env.DSH_DESKTOP_CONFIG;
+  if (explicit && isAbsolute(explicit)) return explicit;
   const home = dshHome();
   if (home) return join(home, 'desktop-shell.json');
   return null;
@@ -123,6 +128,26 @@ function requestStop() {
   return ok('已请求桌面应用停止本地 DSH 服务。');
 }
 
+/** 通知请求 id：时间戳 + 随机段（与外壳 notify-queue.ts 的 makeNotifyId 同构，保持唯一）。 */
+function makeNotifyId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function requestNotify(text) {
+  const body = (text || '').trim();
+  if (!body) return err('用法：/desktop notify <通知文本>');
+  if (body.length > 500) return err('通知文本过长（上限 500 字符）。');
+  save({
+    notifyRequest: {
+      id: makeNotifyId(),
+      title: 'DSH 通知',
+      body,
+      silent: false,
+    },
+  });
+  return ok(`已请求桌面应用通知：${body.slice(0, 40)}${body.length > 40 ? '…' : ''}`);
+}
+
 function status(scope) {
   const cfg = load();
   const lines = [
@@ -168,7 +193,7 @@ function apply(ctx) {
   ctx.commands.register({
     name: 'desktop',
     description: 'open or control the DeepSeek Harness desktop shell',
-    input: { hint: 'open | auto <on|off> | update | status' },
+    input: { hint: 'open | auto <on|off> | update | stop | notify <text> | status' },
     handler: (invocation) => {
       const [sub, ...rest] = invocation.rawInput.trim().split(/\s+/).filter(Boolean);
       const cmd = (sub || 'open').toLowerCase();
@@ -182,10 +207,12 @@ function apply(ctx) {
             return requestUpdate();
           case 'stop':
             return requestStop();
+          case 'notify':
+            return requestNotify(rest.join(' '));
           case 'status':
             return status(scope);
           default:
-            return err('用法：/desktop open | auto <on|off> | update | stop | status');
+            return err('用法：/desktop open | auto <on|off> | update | stop | notify <text> | status');
         }
       } catch (e) {
         return err(e instanceof Error ? e.message : String(e));
