@@ -5,8 +5,14 @@
 //   /desktop update         请求桌面应用检查更新（写共享配置，Electron 监听后触发）
 //   /desktop stop           请求桌面应用停止本地 DSH 服务（写共享配置，Electron 监听后停止）
 //   /desktop notify <文本>  请求桌面应用弹一次系统通知（写共享配置 notifyRequest，
-//                           Electron 监听后弹并清空；勿扰时段内静默丢弃）
+//                           Electron 监听后弹并清空；勿扰时段内静默丢弃）。
+//                           支持 --silent（无声）与 --title <标题> 自定义标题。
 //   /desktop status         回显桌面应用状态
+//
+// 自动通知（0.3.0+）：监听 session/event ——
+//   turn/end（reason=error/blocked/max-tokens，或 all 档再含 completed）与
+//   approval/asked（审批等待）也走同一 notifyRequest 通道；
+//   档位由 settings 的 notifyTurn（off/problems/all）/ notifyApproval 控制。
 //
 // settings 是真相来源：设置面板与 /desktop 命令都通过它；变化由 watch 镜像到
 // 共享配置文件（$DSH_HOME/desktop-shell.json，或 DSH_DESKTOP_CONFIG 指定），
@@ -79,6 +85,10 @@ function err(text) {
 const DesktopSettingsSchema = z.object({
   autoLaunch: z.boolean().default(false),
   desktopExe: z.string().default(''),
+  // turn 结束自动通知档位：off 关 / problems 仅 error·blocked·max-tokens / all 再含 completed
+  notifyTurn: z.union(['off', 'problems', 'all']).default('problems'),
+  // 审批等待（approval/asked）自动通知
+  notifyApproval: z.boolean().default(true),
 });
 
 // 桌面应用 exe 的解析顺序：共享配置（桌面应用自动注册）> settings 手填 > 环境变量。
@@ -133,19 +143,133 @@ function makeNotifyId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function requestNotify(text) {
-  const body = (text || '').trim();
-  if (!body) return err('用法：/desktop notify <通知文本>');
+const NOTIFY_USAGE = '用法：/desktop notify [--silent] [--title <标题>] <通知文本>';
+
+/** 解析 notify 参数里的旗标（--silent、--title <t> / --title=<t>），返回 {title, silent, body} 或用法错误。 */
+function parseNotifyArgs(args) {
+  let silent = false;
+  let title = 'DSH 通知';
+  const rest = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const a = args[i];
+    if (a === '--silent') {
+      silent = true;
+    } else if (a === '--title') {
+      const t = args[i + 1];
+      if (!t || t.startsWith('--')) return { error: NOTIFY_USAGE };
+      title = t;
+      i += 1;
+    } else if (a.startsWith('--title=')) {
+      title = a.slice('--title='.length);
+      if (!title) return { error: NOTIFY_USAGE };
+    } else {
+      rest.push(a);
+    }
+  }
+  return { title, silent, body: rest.join(' ').trim() };
+}
+
+function requestNotify(args) {
+  const parsed = parseNotifyArgs(args);
+  if (parsed.error) return err(parsed.error);
+  const { title, silent, body } = parsed;
+  if (!body) return err(NOTIFY_USAGE);
   if (body.length > 500) return err('通知文本过长（上限 500 字符）。');
+  if (title.length > 100) return err('通知标题过长（上限 100 字符）。');
   save({
     notifyRequest: {
       id: makeNotifyId(),
-      title: 'DSH 通知',
+      title,
       body,
-      silent: false,
+      silent,
     },
   });
   return ok(`已请求桌面应用通知：${body.slice(0, 40)}${body.length > 40 ? '…' : ''}`);
+}
+
+// —— 自动通知：turn 结束 / 审批等待 → 同一 notifyRequest 通道 ——
+
+const TURN_TITLES = {
+  completed: '回合完成',
+  error: '回合出错',
+  blocked: '回合受阻',
+  'max-tokens': '输出截断',
+};
+
+function shortId(id) {
+  return String(id ?? '').slice(-8) || '未知';
+}
+
+/**
+ * 单槽发送队列：notifyRequest 一次只承载一条，外壳取走（清空字段）后才能放下一条。
+ * 自动通知先入队，槽空则立即写；被占时每 2s 重试，超过 60s 的积压丢弃
+ * （无人消费说明桌面外壳没在运行，不值得无限排队）。
+ */
+function makeNotifyQueue(loadFn, saveFn) {
+  const pending = [];
+  let timer = null;
+  function tryDrain() {
+    while (pending.length > 0) {
+      if (loadFn().notifyRequest) return; // 槽被占用：等外壳取走
+      saveFn({ notifyRequest: { id: makeNotifyId(), ...pending.shift() } });
+    }
+  }
+  function arm() {
+    if (timer) return;
+    timer = setInterval(() => {
+      pending.splice(0, pending.length, ...pending.filter((n) => Date.now() - n.queuedAt < 60_000));
+      tryDrain();
+      if (pending.length === 0) {
+        clearInterval(timer);
+        timer = null;
+      }
+    }, 2000);
+    timer.unref?.();
+  }
+  return {
+    push(notification) {
+      pending.push({ silent: false, ...notification, queuedAt: Date.now() });
+      tryDrain();
+      if (pending.length > 0) arm();
+    },
+    dispose() {
+      pending.length = 0;
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+      }
+    },
+  };
+}
+
+/** session/event 监听：按 settings 档位把 turn 结束 / 审批等待转成桌面通知。 */
+function handleSessionEvent(scope, queue, session, event) {
+  const settings = scope.get();
+  if (event?.type === 'turn/end') {
+    const kind = event.reason?.kind;
+    const isProblem = kind === 'error' || kind === 'blocked' || kind === 'max-tokens';
+    // aborted（用户自己取消）/ interrupted（崩溃恢复合成）不打扰
+    const wanted =
+      settings.notifyTurn === 'all'
+        ? kind === 'completed' || isProblem
+        : settings.notifyTurn === 'problems' && isProblem;
+    if (!wanted) return;
+    const detail = kind === 'error' && event.reason?.error?.message
+      ? `：${String(event.reason.error.message).slice(0, 120)}`
+      : '';
+    queue.push({
+      title: `DSH ${TURN_TITLES[kind] ?? '回合结束'}`,
+      body: `会话 ${shortId(session?.id)} 第 ${event.turn} 轮${detail}`,
+      silent: kind === 'completed', // all 档的完成通知不响铃
+    });
+  } else if (event?.type === 'approval/asked' && settings.notifyApproval) {
+    const tool = event.toolName || event.tool?.name || '工具';
+    const reason = event.reason ? `：${String(event.reason).slice(0, 120)}` : '';
+    queue.push({
+      title: 'DSH 等待审批',
+      body: `${tool} 请求审批${reason}（会话 ${shortId(session?.id)}）`,
+    });
+  }
 }
 
 function status(scope) {
@@ -189,11 +313,23 @@ function apply(ctx) {
     }
   });
 
-  // 3) /desktop 命令族
+  // 3) 自动通知：turn 结束 / 审批等待 → notifyRequest（观察者不得抛出，save 失败仅告警）
+  const queue = makeNotifyQueue(load, (patch) => save(patch));
+  ctx.on('session/event', (session, event) => {
+    try {
+      handleSessionEvent(scope, queue, session, event);
+    } catch (e) {
+      console.warn('[desktop-control] auto notify failed:', e?.message ?? e);
+    }
+  });
+  // 插件卸载时停掉重试定时器，避免向共享配置泄漏写入
+  ctx.on('dispose', () => queue.dispose());
+
+  // 4) /desktop 命令族
   ctx.commands.register({
     name: 'desktop',
     description: 'open or control the DeepSeek Harness desktop shell',
-    input: { hint: 'open | auto <on|off> | update | stop | notify <text> | status' },
+    input: { hint: 'open | auto <on|off> | update | stop | notify [--silent] [--title <标题>] <文本> | status' },
     handler: (invocation) => {
       const [sub, ...rest] = invocation.rawInput.trim().split(/\s+/).filter(Boolean);
       const cmd = (sub || 'open').toLowerCase();
@@ -208,7 +344,7 @@ function apply(ctx) {
           case 'stop':
             return requestStop();
           case 'notify':
-            return requestNotify(rest.join(' '));
+            return requestNotify(rest);
           case 'status':
             return status(scope);
           default:

@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-desktop-control",
-  "version": "0.2.0",
-  "description": "DeepSeek Harness cordis plugin: open and control the desktop shell (/desktop), incl. system notification requests, with a settings panel",
+  "version": "0.3.0",
+  "description": "DeepSeek Harness cordis plugin: open and control the desktop shell (/desktop), incl. manual & automatic system notifications (turn end / approval) with a settings panel",
   "type": "module",
   "main": "index.js",
   "license": "MIT",

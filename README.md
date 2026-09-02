@@ -10,8 +10,29 @@ DeepSeek Harness 的 cordis 插件：在 DSH 里用 `/desktop` 命令打开并�
 | `/desktop auto on` / `auto off` | 管理桌面应用的开机自启（写共享配置，桌面应用约 5 秒内应用） |
 | `/desktop update` | 请求桌面应用检查更新（桌面应用轮询到后触发 electron-updater） |
 | `/desktop stop` | 请求桌面应用停止**由它启动的**本地 DSH 服务（没有可停的服务时桌面端会提示） |
-| `/desktop notify <文本>` | 请求桌面应用弹一次**系统通知**（如告警/任务完成提醒；桌面应用勿扰时段内静默丢弃） |
+| `/desktop notify <文本>` | 请求桌面应用弹一次**系统通知**；支持 `--silent`（无声）与 `--title <标题>`（自定义标题，默认「DSH 通知」） |
 | `/desktop status` | 回显桌面应用的地址 / 自启 / 可执行路径 |
+
+## 自动通知（turn 结束 / 审批等待）
+
+0.3.0 起插件监听 DSH 的 `session/event` 事件流，把两类高价值时机自动转成系统通知
+（走与 `/desktop notify` 相同的共享配置通道，无需手动敲命令）：
+
+| 事件 | 通知 | 默认 |
+|------|------|------|
+| `turn/end`（reason=error / blocked / max-tokens） | 「DSH 回合出错/受阻/输出截断」，带会话短 id、轮次与错误摘要 | 开（problems 档） |
+| `turn/end`（reason=completed） | 「DSH 回合完成」，静默无声 | 关（`all` 档才开） |
+| `approval/asked` | 「DSH 等待审批」，带工具名与原因 | 开 |
+
+档位在 DSH「设置 → 插件 → 插件配置 → desktop-control」里调整：
+
+- `notifyTurn`：`off` / `problems`（默认，仅异常）/ `all`（完成也通知，静默不响铃）
+- `notifyApproval`：审批等待通知开关（默认开）
+
+`aborted`（用户主动取消）与 `interrupted`（崩溃恢复合成）不通知。
+通知通道为**单槽**：一条通知被桌面应用取走前，后续自动通知会在插件内排队
+（每 2s 重试，积压超过 60s 丢弃）；手动 `/desktop notify` 直接占用槽位。
+桌面应用勿扰时段内的通知会被外壳静默丢弃（按既有勿扰设计）。
 
 ## 运行机制
 
