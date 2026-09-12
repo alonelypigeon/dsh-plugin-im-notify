@@ -20,6 +20,7 @@ function makeCtx({ initialSettings = {} } = {}) {
   const watches = [];
   const updates = [];
   const listeners = new Map();
+  const plugins = [];
   const scope = {
     get: () => ({
       autoLaunch: false,
@@ -65,9 +66,13 @@ function makeCtx({ initialSettings = {} } = {}) {
         if (i >= 0) arr.splice(i, 1);
       };
     },
+    // 真实 cordis ctx 才有 plugin()：桩里挂扇出服务只记录，供断言用
+    plugin(svc) {
+      plugins.push(svc);
+    },
   };
   const emit = (event, ...args) => (listeners.get(event) ?? []).forEach((cb) => cb(...args));
-  const handle = { ctx, commands, watches, updates, scope, emit };
+  const handle = { ctx, commands, watches, updates, scope, emit, plugins };
   activeCtxs.push(handle);
   return handle;
 }
@@ -223,8 +228,10 @@ test('/desktop：未知子命令给出用法；空子命令默认 open（找不�
 
 const SESSION = { id: 'sess-abcd1234-5678-90ef' };
 
+// 真实运行时的事件信封：{ type, seq, time, data }，payload 在 data 里
+// （dsh-session append() 构造，见 SessionEventMap：turn/end → { turn, reason }）。
 function turnEnd(turn, kind, extra = {}) {
-  return { type: 'turn/end', turn, reason: { kind, ...extra } };
+  return { type: 'turn/end', seq: 0, time: Date.now(), data: { turn, reason: { kind, ...extra } } };
 }
 
 test('自动通知：默认 problems 档——error/blocked/max-tokens 弹，completed/aborted 不弹', async () => {
@@ -267,7 +274,7 @@ test('自动通知：all 档 completed 也弹且静默；off 档全不弹', asyn
 test('自动通知：approval/asked 默认弹、可关；错误事件不炸监听', async () => {
   const { ctx, emit } = makeCtx();
   mod.apply(ctx);
-  emit('session/event', SESSION, { type: 'approval/asked', toolName: 'bash', reason: 'rm -rf 构建' });
+  emit('session/event', SESSION, { type: 'approval/asked', seq: 1, time: Date.now(), data: { id: 'apr-1', toolName: 'bash', reason: 'rm -rf 构建' } });
   let saved = readConfig();
   assert.equal(saved.notifyRequest.title, 'DSH 等待审批');
   assert.match(saved.notifyRequest.body, /bash 请求审批：rm -rf 构建/);
@@ -275,15 +282,15 @@ test('自动通知：approval/asked 默认弹、可关；错误事件不炸监�
   writeFileSync(configFile, JSON.stringify({}), 'utf8');
   const muted = makeCtx({ initialSettings: { notifyApproval: false } });
   mod.apply(muted.ctx);
-  muted.emit('session/event', SESSION, { type: 'approval/asked', toolName: 'bash' });
+  muted.emit('session/event', SESSION, { type: 'approval/asked', seq: 2, time: Date.now(), data: { id: 'apr-2', toolName: 'bash' } });
   assert.equal(readConfig().notifyRequest, undefined);
 
   // 非法/未知事件形态：静默忽略，不抛出（用全关档位隔离验证）
   const offAll = makeCtx({ initialSettings: { notifyTurn: 'off', notifyApproval: false } });
   mod.apply(offAll.ctx);
   offAll.emit('session/event', SESSION, null);
-  offAll.emit('session/event', null, { type: 'turn/end', turn: 1, reason: { kind: 'error', error: null } });
-  offAll.emit('session/event', SESSION, { type: 'assistant/chunk' });
+  offAll.emit('session/event', null, { type: 'turn/end', seq: 3, time: Date.now(), data: { turn: 1, reason: { kind: 'error', error: null } } });
+  offAll.emit('session/event', SESSION, { type: 'assistant/chunk', seq: 4, time: Date.now(), data: {} });
   assert.equal(readConfig().notifyRequest, undefined);
 });
 

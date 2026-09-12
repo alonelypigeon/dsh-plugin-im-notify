@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-desktop-control",
-  "version": "0.3.0",
-  "description": "DeepSeek Harness cordis plugin: open and control the desktop shell (/desktop), incl. manual & automatic system notifications (turn end / approval) with a settings panel",
+  "version": "0.5.0",
+  "description": "DeepSeek Harness cordis plugin: open and control the desktop shell (/desktop), incl. manual & automatic system notifications (turn end / approval) mirrored to IM/webhook channels (Feishu, WeCom, DingTalk, Telegram, generic webhook) with a settings panel",
   "type": "module",
   "main": "index.js",
   "license": "MIT",
@@ -12,10 +12,10 @@
     "test": "node --test \"test/*.test.mjs\""
   },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-commands": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-settings": "^0.1.0-rc.6"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-commands": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.1"

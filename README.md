@@ -34,6 +34,26 @@ DeepSeek Harness 的 cordis 插件：在 DSH 里用 `/desktop` 命令打开并�
 （每 2s 重试，积压超过 60s 丢弃）；手动 `/desktop notify` 直接占用槽位。
 桌面应用勿扰时段内的通知会被外壳静默丢弃（按既有勿扰设计）。
 
+## IM/webhook 通知扇出（0.5.0+）
+
+桌面通知（手动 notify + 自动通知 + balance-panel 花费告警的转发）可镜像推送到
+IM 渠道，在 DSH「设置 → 插件 → 插件配置 → desktop-control」里按渠道开启：
+
+| 渠道 | 配置 | 说明 |
+|------|------|------|
+| `imGeneric*` | 开关 + webhook 地址 | **通用基座**：POST 通知 JSON（`{source,title,body,silent}`），可接企业自动化/自建网关 |
+| `imFeishu*` | 开关 + 群机器人 webhook | 自定义机器人「安全设置」选任意项均可（默认文本消息） |
+| `imWecom*` | 开关 + 群机器人 webhook | 企业微信群机器人 |
+| `imDingtalk*` | 开关 + webhook（+ 加签密钥） | 钉钉群机器人；安全设置选「加签」时填 `imDingtalkSecret` |
+| `imTelegram*` | 开关 + botToken + chatId | 走 bot API `sendMessage`；自动使用标准 `HTTPS_PROXY`/`HTTP_PROXY` 环境变量代理（国内渠道直连不受影响） |
+
+- 每渠道独立开关 + 地址，互不阻塞；成功判定 = HTTP 2xx。
+- 发送失败与桌面队列同语义：每 2s 重试，超过 60s 丢弃（console 告警一次）。
+- **跨插件转发**：其它插件（如 balance-panel 的每日花费告警）直接写共享配置的
+  `notifyRequest`（带 `source` 标记、无 `src` 字段），本插件监听共享配置变化
+  自动扇出到 IM；自己的写入带 `src: 'desktop-control'` 标记不会重复扇出。
+- webhook 地址 / botToken / 加签密钥在设置面板按敏感项脱敏展示。
+
 ## 运行机制
 
 插件运行在 DSH 进程内，与独立 Electron 桌面应用通过**共享配置文件**通信：
