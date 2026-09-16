@@ -3,7 +3,7 @@
 //   2. 钉钉加签（向量由 openssl dgst -sha256 -hmac 独立算出，防循环验证）；
 //   3. 各渠道真实 HTTP 投递（本地收端，无外网）+ 非 2xx 报错；
 //   4. 重试队列语义：即刻首投、2s 重试、60s 过期丢弃、渠道间互不阻塞；
-//   5. 经 index.js 的集成：自动/手动通知镜像到 IM，桌面通知不重复；
+//   5. 经 index.js 的集成：自动通知直推 IM（无桌面写入）、外来通知扇出；
 //   6. Telegram 代理：本地 CONNECT 代理 → 本地 http 收端全链路。
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -208,13 +208,11 @@ test('makeImQueue：单渠道失败不阻塞其它渠道', async () => {
 
 // —— 5. 经 index.js 集成 ——
 
-/** 精简 cordis ctx 桩：与 desktop-control.test.mjs 的 makeCtx 同构（IM 字段进 settings）。 */
+/** 精简 cordis ctx 桩：与 im-notify.test.mjs 的 makeCtx 同构（IM 字段进 settings）。 */
 function makeCtx(initial = {}) {
   const commands = [];
   const listeners = new Map();
   const settings = {
-    autoLaunch: false,
-    desktopExe: '',
     notifyTurn: 'problems',
     notifyApproval: true,
     imGenericEnabled: false,
@@ -249,7 +247,7 @@ function makeCtx(initial = {}) {
   return { ctx, commands, scope, emit };
 }
 
-test('集成：自动通知镜像到 IM（source 标记）且桌面照常', async () => {
+test('集成：自动通知直推 IM（无桌面写入）', async () => {
   const rx = await startReceiver();
   const configFile = join(tmpdir(), `dsh-im-fanout-test-${process.pid}-${Date.now()}.json`);
   process.env.DSH_DESKTOP_CONFIG = configFile;
@@ -269,8 +267,8 @@ test('集成：自动通知镜像到 IM（source 标记）且桌面照常', asyn
     const payload = JSON.parse(rx.hits[0].body);
     assert.equal(payload.source, 'turn-end/error');
     assert.match(payload.body, /boom/);
-    const saved = JSON.parse(readFileSync(configFile, 'utf8'));
-    assert.equal(saved.notifyRequest.title, 'DSH 回合出错', '桌面通道照常工作');
+    // 桌面外壳已归档：插件只读共享配置，不再产生任何写入
+    assert.ok(!existsSync(configFile), '自动通知不写共享配置');
   } finally {
     delete process.env.DSH_DESKTOP_CONFIG;
     rmSync(configFile, { force: true });
@@ -278,33 +276,7 @@ test('集成：自动通知镜像到 IM（source 标记）且桌面照常', asyn
   }
 });
 
-test('集成：手动 /desktop notify 镜像 IM 且桌面不重复', async () => {
-  const rx = await startReceiver();
-  const configFile = join(tmpdir(), `dsh-im-fanout-test-${process.pid}-${Date.now()}.json`);
-  process.env.DSH_DESKTOP_CONFIG = configFile;
-  try {
-    const h = makeCtx({ imGenericEnabled: true, imGenericUrl: rx.url });
-    const { ctx, commands } = h;
-    applied.push(h);
-    mod.apply(ctx);
-    const handler = commands[0].handler;
-    const result = handler({ rawInput: 'notify --title 构建完成 --silent 全部通过' });
-    assert.match(result.text, /已请求桌面应用通知/);
-    await new Promise((r) => setTimeout(r, 20));
-    assert.equal(rx.hits.length, 1, 'IM 恰好一条');
-    assert.equal(JSON.parse(rx.hits[0].body).source, 'manual');
-    const saved = JSON.parse(readFileSync(configFile, 'utf8'));
-    assert.equal(saved.notifyRequest.title, '构建完成');
-    assert.equal(saved.notifyRequest.silent, true);
-    assert.ok(!saved.notifyRequest.source, '桌面 notifyRequest 不携带 IM 扩展字段');
-  } finally {
-    delete process.env.DSH_DESKTOP_CONFIG;
-    rmSync(configFile, { force: true });
-    await rx.close();
-  }
-});
-
-test('集成：无渠道启用时不发 IM，桌面通知不受影响', async () => {
+test('集成：无渠道启用时不发任何请求、不写共享配置', async () => {
   let hits = 0;
   const server = http.createServer((req, res) => {
     req.resume();
@@ -316,10 +288,9 @@ test('集成：无渠道启用时不发 IM，桌面通知不受影响', async ()
   process.env.DSH_DESKTOP_CONFIG = configFile;
   try {
     const h = makeCtx(); // 全部 IM 关
-    const { ctx, commands, emit } = h;
+    const { ctx, emit } = h;
     applied.push(h);
     mod.apply(ctx);
-    commands[0].handler({ rawInput: 'notify hello' });
     emit('session/event', { id: 'sess-abcd1234-5678' }, {
       type: 'turn/end',
       seq: 1,
@@ -328,8 +299,7 @@ test('集成：无渠道启用时不发 IM，桌面通知不受影响', async ()
     });
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(hits, 0, 'IM 收端零请求');
-    const saved = JSON.parse(readFileSync(configFile, 'utf8'));
-    assert.ok(saved.notifyRequest, '桌面通道照常');
+    assert.ok(!existsSync(configFile), '无渠道时也不写共享配置（桌面通道已移除）');
   } finally {
     delete process.env.DSH_DESKTOP_CONFIG;
     rmSync(configFile, { force: true });
@@ -369,25 +339,7 @@ test('共享配置监听：外来 notifyRequest（balance-panel 告警）扇出�
   }
 });
 
-test('共享配置监听：自有写入（src 标记）不重复扇出', async () => {
-  const rx = await startReceiver();
-  const configFile = join(tmpdir(), `dsh-im-fanout-test-${process.pid}-${Date.now()}.json`);
-  process.env.DSH_DESKTOP_CONFIG = configFile;
-  try {
-    const h = makeCtx({ imGenericEnabled: true, imGenericUrl: rx.url });
-    const { ctx, commands } = h;
-    applied.push(h);
-    mod.apply(ctx);
-    commands[0].handler({ rawInput: 'notify hello' });
-    await new Promise((r) => setTimeout(r, 200)); // 等监听器扫到自己写入的 notifyRequest
-    assert.equal(rx.hits.length, 1, '仅内联扇出一次');
-    assert.equal(JSON.parse(rx.hits[0].body).source, 'manual', '扇出来源为 manual（监听侧未重复）');
-  } finally {
-    delete process.env.DSH_DESKTOP_CONFIG;
-    rmSync(configFile, { force: true });
-    await rx.close();
-  }
-});
+// src 标记跳过的防重语义已由 im-notify.test.mjs 的 watchForeignNotify 用例覆盖。
 
 // —— 6. Telegram 代理（CONNECT 隧道 → 本地 http 收端全链路） ——
 

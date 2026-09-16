@@ -1,6 +1,20 @@
 # Changelog
 
-独立仓库：DeepSeek Harness cordis 插件（`/desktop` 遥控命令族 + 设置面板 + 自动通知 + IM 扇出）。
+独立仓库：DeepSeek Harness cordis 插件（IM/webhook 通知扇出；v1.0.0 前身为 desktop-control——`/desktop` 遥控命令族 + 桌面通知 + IM 扇出）。
+
+## [1.0.0] - 2026-09-16
+
+- **更名 `desktop-control` → `im-notify`，收敛为纯 IM/webhook 通知扇出**：DeepSeek
+  官方桌面客户端发布、外壳 dsh-desktop-shell 归档，移除全部外壳耦合面——
+  `/desktop` 命令族（open/auto/update/stop/status）、手动 `notify` 命令、桌面
+  系统通知与单槽队列、开机自启/应用路径设置与共享配置镜像写入。
+- 保留：四渠道 + 通用 webhook 扇出（2s 重试、60s 丢弃、渠道间互不阻塞）、
+  turn 结束 / 审批等待自动通知档位（off/problems/all）、外来通知转发
+  （共享配置 `notifyRequest`，balance-panel 告警联动）。
+- 插件 id / settings namespace / 包名统一更名为 `im-notify`；新增 `/im status`
+  命令回显档位与渠道启用数。`inject` 不再需要 `webServer`。
+- **升级**：profile `cordis.patch.yml` 的 insert id 需改为 `im-notify`；IM 渠道
+  配置因 namespace 更名需在设置面板重填一次。
 
 ## [0.5.0] - 2026-09-12
 
